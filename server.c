@@ -5,14 +5,7 @@
 #include <arpa/inet.h>
 #include <sys/time.h>
 #include <pthread.h>
-
-#define MAX_CLIENTS 2
-#define TEXT_MESSAGE_FLAG 0
-#define FILE_MESSAGE_FLAG 1
-#define SERVER_IP "127.0.0.1"
-#define SERVER_PORT 1234
-#define MAX_BUFFER_SIZE 1024
-#define RECEIVED_FILE_PATH "recv.mp4" // 接收到的文件保存路径
+#include "settings.h"
 
 void error(const char *msg)
 {
@@ -166,6 +159,24 @@ void quickRecvFile(FILE *file, int client_fd, int num_threads, int client_id)
     printf("File transfer completed in %ld milliseconds.\n", end_time - start_time);
 }
 
+void slowSendFile(FILE *file, int client_socket)
+{
+    long start_time = getCurrentTimeInMilliseconds();
+
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    rewind(file);
+    send(client_socket, &file_size, sizeof(file_size), 0);
+
+    char buffer[MAX_BUFFER_SIZE];
+    size_t bytes_read;
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0)
+        send(client_socket, buffer, bytes_read, 0);
+
+    long end_time = getCurrentTimeInMilliseconds();
+    printf("File transfer completed in %ld milliseconds.\n", end_time - start_time);
+}
+
 typedef struct
 {
     int client_id;
@@ -187,16 +198,33 @@ void *handle_client(void *args)
             recv(client_fd, text_message, sizeof(text_message), 0);
             printf("Received text message from client: %s", text_message);
         }
-        else if (flag == FILE_MESSAGE_FLAG)
+        else if (flag == SEND_FILE_FLAG)
         {
+            // "send" is the client view, so server needs recv
             char filename[50];
-            sprintf(filename, "%d_%s", client_fd, RECEIVED_FILE_PATH);
+            sprintf(filename, "%d_%s", client_id, RECEIVED_FILE_PATH);
             FILE *file = fopen(filename, "wb");
             if (file == NULL)
                 error("Error opening file");
             // slowRecvFile(file, client_fd);
-            quickRecvFile(file, client_fd, 3, client_id);
+            quickRecvFile(file, client_fd, NUM_THREADS, client_id);
             fclose(file);
+        }
+        else if (flag == RECV_FILE_FLAG)
+        {
+            // "recv" is the client view, so server needs send
+            char filename[50];
+            // send another client large file
+            sprintf(filename, "%d_%s", 1 - client_id, RECEIVED_FILE_PATH);
+            FILE *file = fopen(filename, "rb");
+            if (file == NULL)
+            {
+                printf("another client didn't send file to server");
+                continue;
+            }
+
+            fseek(file, 0, SEEK_SET);
+            slowSendFile(file, client_fd);
         }
         else
             break;
@@ -245,11 +273,6 @@ int main(int argc, char *argv[])
             perror("Thread creation failed");
             exit(EXIT_FAILURE);
         }
-        // if (pthread_create(&thread, NULL, handle_client, &client_fd) != 0)
-        // {
-        //     perror("Thread creation failed");
-        //     exit(EXIT_FAILURE);
-        // }
     }
     close(server_socket);
     pthread_exit(NULL);

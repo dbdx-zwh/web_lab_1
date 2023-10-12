@@ -5,13 +5,7 @@
 #include <arpa/inet.h>
 #include <sys/time.h>
 #include <pthread.h>
-
-#define TEXT_MESSAGE_FLAG 0
-#define FILE_MESSAGE_FLAG 1
-#define MAX_BUFFER_SIZE 1024
-#define SERVER_IP "127.0.0.1"
-#define SERVER_PORT 1234
-#define FILE_PATH "./video.mp4"
+#include "settings.h"
 
 void error(const char *msg)
 {
@@ -63,24 +57,6 @@ long *get_offsets(int *arr, int num_threads)
         offsets[j] = offsets[j - 1] + arr[j - 1];
     }
     return offsets;
-}
-
-void slowSendFile(FILE *file, int client_socket)
-{
-    long start_time = getCurrentTimeInMilliseconds();
-
-    fseek(file, 0, SEEK_END);
-    long file_size = ftell(file);
-    rewind(file);
-    send(client_socket, &file_size, sizeof(file_size), 0);
-
-    char buffer[MAX_BUFFER_SIZE];
-    size_t bytes_read;
-    while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0)
-        send(client_socket, buffer, bytes_read, 0);
-
-    long end_time = getCurrentTimeInMilliseconds();
-    printf("File transfer completed in %ld milliseconds.\n", end_time - start_time);
 }
 
 typedef struct
@@ -158,7 +134,7 @@ void threadsSendFile(FILE *file, int *sockets, int num_threads)
     free(offsets);
 }
 
-void quickSendFile(FILE *file, int client_socket, int num_threads, int client_id)
+void quickSendFile(FILE *file, int client_fd, int num_threads, int client_id)
 {
     int thread_sockets[num_threads];
     for (int i = 0; i < num_threads; i++)
@@ -179,8 +155,6 @@ void quickSendFile(FILE *file, int client_socket, int num_threads, int client_id
         if (client_id % 2 == 0)
             server_addr.sin_port -= 1;
 
-        printf("sin port id: %d\n", server_addr.sin_port);
-
         if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
         {
             perror("[-]Error in thread connection");
@@ -200,13 +174,37 @@ void quickSendFile(FILE *file, int client_socket, int num_threads, int client_id
     printf("File transfer completed in %ld milliseconds.\n", end_time - start_time);
 }
 
+void slowRecvFile(FILE *file, int client_fd)
+{
+    long startTime = getCurrentTimeInMilliseconds();
+
+    // Receive file size from client
+    long file_size;
+    recv(client_fd, &file_size, sizeof(file_size), 0);
+    printf("Receiving file of size: %ld bytes\n", file_size);
+
+    // Receive file in chunks
+    char buffer[MAX_BUFFER_SIZE];
+    size_t totalBytesReceived = 0;
+    while (totalBytesReceived < file_size)
+    {
+        size_t bytesRead = recv(client_fd, buffer, sizeof(buffer), 0);
+        fwrite(buffer, 1, bytesRead, file);
+        totalBytesReceived += bytesRead;
+    }
+
+    long endTime = getCurrentTimeInMilliseconds();
+    printf("File received in %ld milliseconds.\n", endTime - startTime);
+    fclose(file);
+}
+
 int main(int argc, char *argv[])
 {
     const char *server_ip = SERVER_IP;
     int server_port = SERVER_PORT;
 
-    int client_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (client_socket == -1)
+    int client_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (client_fd == -1)
         error("Error creating socket");
 
     struct sockaddr_in server_address;
@@ -216,19 +214,19 @@ int main(int argc, char *argv[])
 
     if (inet_pton(AF_INET, server_ip, &server_address.sin_addr) <= 0)
         error("Error converting server IP address");
-    if (connect(client_socket, (struct sockaddr *)&server_address, sizeof(server_address)) == -1)
+    if (connect(client_fd, (struct sockaddr *)&server_address, sizeof(server_address)) == -1)
         error("Error connecting to the server");
 
     int client_id;
-    recv(client_socket, &client_id, sizeof(client_id), 0);
+    recv(client_fd, &client_id, sizeof(client_id), 0);
     printf("Client id is %d\n", client_id);
 
     while (1)
     {
         int flag;
-        printf("choose send text or large file: ");
+        printf("choose send text or send large file or recv large file: ");
         scanf("%d", &flag);
-        send(client_socket, &flag, sizeof(flag), 0);
+        send(client_fd, &flag, sizeof(flag), 0);
         fflush(stdin);
 
         if (flag == TEXT_MESSAGE_FLAG)
@@ -236,24 +234,32 @@ int main(int argc, char *argv[])
             char buffer[MAX_BUFFER_SIZE];
             printf("Enter the message: ");
             fgets(buffer, sizeof(buffer), stdin);
-            if (send(client_socket, buffer, sizeof(buffer), 0) == -1)
+            if (send(client_fd, buffer, sizeof(buffer), 0) == -1)
                 error("Error sending message");
         }
-        else if (flag == FILE_MESSAGE_FLAG)
+        else if (flag == SEND_FILE_FLAG)
         {
             FILE *file = fopen(FILE_PATH, "rb");
             if (file == NULL)
                 error("Error opening file");
 
             fseek(file, 0, SEEK_SET);
-            // slowSendFile(file, client_socket);
-            quickSendFile(file, client_socket, 3, client_id);
+            quickSendFile(file, client_fd, NUM_THREADS, client_id);
             fclose(file);
+        }
+        else if (flag == RECV_FILE_FLAG)
+        {
+            char filename[50];
+            sprintf(filename, "%d_%s", client_id, RECEIVED_FILE_PATH);
+            FILE *file = fopen(filename, "wb");
+            if (file == NULL)
+                error("Error opening file");
+            slowRecvFile(file, client_fd);
         }
         else
             break;
     }
 
-    close(client_socket);
+    close(client_fd);
     return 0;
 }
