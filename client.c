@@ -7,6 +7,9 @@
 #include <pthread.h>
 #include "settings.h"
 
+#define SEND_FILE_PATH "./client_file/file.txt"
+#define RECV_FILE_PATH "./client_file/file.pdf"
+
 void error(const char *msg)
 {
     perror(msg);
@@ -134,7 +137,7 @@ void threadsSendFile(FILE *file, int *sockets, int num_threads)
     free(offsets);
 }
 
-void quickSendFile(FILE *file, int client_fd, int num_threads, int client_id)
+void quickSendFile(FILE *file, int client_fd, int num_threads, int client_id, int choice)
 {
     int thread_sockets[num_threads];
     for (int i = 0; i < num_threads; i++)
@@ -148,7 +151,10 @@ void quickSendFile(FILE *file, int client_fd, int num_threads, int client_id)
         }
         struct sockaddr_in server_addr;
         server_addr.sin_family = AF_INET;
-        server_addr.sin_addr.s_addr = inet_addr(SERVER_IP);
+        if (choice == 1)
+            server_addr.sin_addr.s_addr = inet_addr(SERVER_IP_1);
+        else
+            server_addr.sin_addr.s_addr = inet_addr(SERVER_IP_2);
         server_addr.sin_port = SERVER_PORT + (i + 1) * 2;
 
         // avoid thread reuse, cause max clients is 2, so easy solution below
@@ -174,14 +180,22 @@ void quickSendFile(FILE *file, int client_fd, int num_threads, int client_id)
     printf("File transfer completed in %ld milliseconds.\n", end_time - start_time);
 }
 
+int cRecvNum(char *byte_str)
+{
+    int length = strlen(byte_str);
+    byte_str[length] = '\0';
+    return atoi(byte_str);
+}
+
 void slowRecvFile(FILE *file, int client_fd)
 {
     long startTime = getCurrentTimeInMilliseconds();
 
     // Receive file size from client
-    long file_size;
-    recv(client_fd, &file_size, sizeof(file_size), 0);
-    printf("Receiving file of size: %ld bytes\n", file_size);
+    char file_size_byte[50];
+    recv(client_fd, file_size_byte, sizeof(file_size_byte), 0);
+    int file_size = cRecvNum(file_size_byte);
+    printf("Receiving file of size: %d bytes\n", file_size);
 
     // Receive file in chunks
     char buffer[MAX_BUFFER_SIZE];
@@ -200,31 +214,79 @@ void slowRecvFile(FILE *file, int client_fd)
 
 int main(int argc, char *argv[])
 {
-    const char *server_ip = SERVER_IP;
     int server_port = SERVER_PORT;
 
-    int client_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (client_fd == -1)
+    int client_fd_1 = socket(AF_INET, SOCK_STREAM, 0);
+    if (client_fd_1 == -1)
         error("Error creating socket");
 
-    struct sockaddr_in server_address;
-    memset(&server_address, 0, sizeof(server_address));
-    server_address.sin_family = AF_INET;
-    server_address.sin_port = htons(server_port);
+    int client_fd_2 = socket(AF_INET, SOCK_STREAM, 0);
+    if (client_fd_2 == -1)
+        error("Error creating socket");
 
-    if (inet_pton(AF_INET, server_ip, &server_address.sin_addr) <= 0)
+    struct sockaddr_in server_address_1;
+    memset(&server_address_1, 0, sizeof(server_address_1));
+    server_address_1.sin_family = AF_INET;
+    server_address_1.sin_port = htons(server_port);
+    server_address_1.sin_addr.s_addr = inet_addr(SERVER_IP_1);
+
+    if (inet_pton(AF_INET, SERVER_IP_1, &server_address_1.sin_addr) <= 0)
         error("Error converting server IP address");
-    if (connect(client_fd, (struct sockaddr *)&server_address, sizeof(server_address)) == -1)
+    if (connect(client_fd_1, (struct sockaddr *)&server_address_1, sizeof(server_address_1)) == -1)
         error("Error connecting to the server");
 
-    int client_id;
-    recv(client_fd, &client_id, sizeof(client_id), 0);
-    printf("Client id is %d\n", client_id);
+    int client_id_1;
+    recv(client_fd_1, &client_id_1, sizeof(client_id_1), 0);
+    printf("Client id is %d\n", client_id_1);
+
+    struct sockaddr_in server_address_2;
+    memset(&server_address_2, 0, sizeof(server_address_2));
+    server_address_2.sin_family = AF_INET;
+    server_address_2.sin_port = htons(server_port);
+    server_address_2.sin_addr.s_addr = inet_addr(SERVER_IP_2);
+
+    if (inet_pton(AF_INET, SERVER_IP_2, &server_address_2.sin_addr) <= 0)
+        error("Error converting server IP address");
+    if (connect(client_fd_2, (struct sockaddr *)&server_address_2, sizeof(server_address_2)) == -1)
+        error("Error connecting to the server");
+
+    char sclient_id_2[50];
+    recv(client_fd_2, &sclient_id_2, sizeof(sclient_id_2), 0);
+    int client_id_2 = atoi(sclient_id_2);
+    printf("Client id is %d\n", client_id_2);
 
     while (1)
     {
+        int choice;
+        int client_fd, client_id;
+        while (1)
+        {
+            printf("select one server you want to interact with: \n");
+            printf("1: means this server\n");
+            printf("2: means that server\n");
+            scanf("%d", &choice);
+            if (choice == 1)
+            {
+                client_fd = client_fd_1;
+                client_id = client_id_1;
+                break;
+            }
+            else if (choice == 2)
+            {
+                client_fd = client_fd_2;
+                client_id = client_id_2;
+                break;
+            }
+            else
+                printf("you should input 1 or 2!\n");
+        }
+
         int flag;
-        printf("choose send text or send large file or recv large file: ");
+        printf("select your option: \n");
+        printf("1. send text message\n");
+        printf("2. send large file\n");
+        printf("3. recv large file\n");
+        printf("4. exit\n");
         scanf("%d", &flag);
         send(client_fd, &flag, sizeof(flag), 0);
         fflush(stdin);
@@ -232,6 +294,7 @@ int main(int argc, char *argv[])
         if (flag == TEXT_MESSAGE_FLAG)
         {
             char buffer[MAX_BUFFER_SIZE];
+            memset(buffer, '\0', sizeof(buffer));
             printf("Enter the message: ");
             fgets(buffer, sizeof(buffer), stdin);
             if (send(client_fd, buffer, sizeof(buffer), 0) == -1)
@@ -239,27 +302,32 @@ int main(int argc, char *argv[])
         }
         else if (flag == SEND_FILE_FLAG)
         {
-            FILE *file = fopen(FILE_PATH, "rb");
+            FILE *file = fopen(SEND_FILE_PATH, "rb");
             if (file == NULL)
                 error("Error opening file");
 
             fseek(file, 0, SEEK_SET);
-            quickSendFile(file, client_fd, NUM_THREADS, client_id);
+            quickSendFile(file, client_fd, NUM_THREADS, client_id, choice);
             fclose(file);
         }
         else if (flag == RECV_FILE_FLAG)
         {
-            char filename[50];
-            sprintf(filename, "%d_%s", client_id, RECEIVED_FILE_PATH);
-            FILE *file = fopen(filename, "wb");
+            FILE *file = fopen(RECV_FILE_PATH, "wb");
             if (file == NULL)
                 error("Error opening file");
             slowRecvFile(file, client_fd);
         }
         else
+        {
+            if (client_fd != client_fd_1)
+                send(client_fd_1, &flag, sizeof(flag), 0);
+            else
+                send(client_fd_2, &flag, sizeof(flag), 0);
             break;
+        }
     }
 
-    close(client_fd);
+    close(client_fd_1);
+    close(client_fd_2);
     return 0;
 }
